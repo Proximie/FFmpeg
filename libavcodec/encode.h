@@ -50,4 +50,7 @@ int ff_get_encode_buffer(AVCodecContext *avctx, AVPacket *avpkt, int64_t size, i
  */
 int ff_encode_preinit(AVCodecContext *avctx);
 
+/*Proximie*/
+void vpx_change_cfg(AVCodecContext* enc_context, int64_t bitrate);
+
 #endif /* AVCODEC_ENCODE_H */

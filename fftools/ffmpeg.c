@@ -33,6 +33,18 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
+/*Proximie*/
+#ifdef _WIN32
+#include <winsock2.h>
+#include <fcntl.h>
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <stdio.h>
+#include <arpa/inet.h>
+#endif
+/*End Proximie*/
+
 #if HAVE_IO_H
 #include <io.h>
 #endif
@@ -64,6 +76,8 @@
 #include "libavutil/thread.h"
 #include "libavutil/threadmessage.h"
 #include "libavcodec/mathops.h"
+/*Proximie*/
+#include "libavcodec/encode.h"
 #include "libavformat/os_support.h"
 
 # include "libavfilter/avfilter.h"
@@ -105,6 +119,14 @@
 #include "cmdutils.h"
 
 #include "libavutil/avassert.h"
+
+/*Proximie*/
+#ifdef _WIN32
+SOCKET sockfd=-1;
+#else
+int sockfd=-1;
+#endif
+/*End Proximie*/
 
 const char program_name[] = "ffmpeg";
 const int program_birth_year = 2000;
@@ -4767,6 +4789,14 @@ static int transcode(void)
     InputStream *ist;
     int64_t timer_start;
     int64_t total_packets_written = 0;
+    
+/*Proximie*/
+    char socket_data[4];
+    int data;
+    uint32_t bitrate;
+    OutputStream* enc_ost;
+    AVCodecContext* enc_ctx;
+/*End Proximie*/
 
     ret = transcode_init();
     if (ret < 0)
@@ -4796,6 +4826,44 @@ static int transcode(void)
             av_log(NULL, AV_LOG_VERBOSE, "No more output streams to write to, finishing.\n");
             break;
         }
+
+        /*Proximie*/
+        data = recvfrom(sockfd, socket_data, 4, 0, NULL, NULL);
+       
+        if (data >= 4) {
+            bitrate = *((uint32_t*)socket_data);
+            bitrate = bitrate<10000?bitrate*1000:bitrate;/*workaround for test app sending in kb*/
+            for (i = 0; i < nb_output_streams; i++) {
+                enc_ost = output_streams[i];
+                
+                    if (enc_ost->attachment_filename)
+                     continue;
+
+                    //enc_ctx = enc_ost->stream_copy ? enc_ost->st->codecpar :  enc_ost->enc_ctx;
+                    if (enc_ost->stream_copy) {
+                        av_log(NULL, AV_LOG_ERROR, "Unexpected situation happend just skip \n");
+                    }
+                    enc_ctx = enc_ost->enc_ctx;
+                    
+                av_log(NULL, AV_LOG_ERROR, "New bitrate: %d for stream %d, old value %lld \n", bitrate, i, enc_ctx->bit_rate);
+                av_log(NULL, AV_LOG_ERROR, "bit_rate_tolerance=%d, global_quality=%d, compression_level=%d \n", enc_ctx->bit_rate_tolerance, enc_ctx->global_quality, enc_ctx->compression_level);
+                av_log(NULL, AV_LOG_ERROR, "width=%d, height=%d, pix_fmt=%d \n", enc_ctx->width, enc_ctx->height, enc_ctx->pix_fmt);
+                av_log(NULL, AV_LOG_ERROR, "flags=%d, flags2=%d \n\n", enc_ctx->flags, enc_ctx->flags2);
+
+
+                av_log(NULL, AV_LOG_ERROR, "Codec name: %s, long_name=%s \n", enc_ctx->codec->name, enc_ctx->codec->long_name);
+
+                vpx_change_cfg(enc_ctx, bitrate);
+
+                if (enc_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+                    enc_ctx->bit_rate = bitrate;
+                    enc_ctx->rc_max_rate = bitrate;
+                    enc_ctx->rc_buffer_size = bitrate / 2;
+                    
+                }
+            }  
+        }
+        /*End Proximie*/
 
         ret = transcode_step();
         if (ret < 0 && ret != AVERROR_EOF) {
@@ -4951,6 +5019,42 @@ static void log_callback_null(void *ptr, int level, const char *fmt, va_list vl)
 {
 }
 
+/*Proximie*/
+static void start_bitrate_server( void ) 
+{
+    struct sockaddr_in servaddr;
+#ifdef _WIN32
+        u_long iMode;
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        printf("Failed. Error Code : %d", WSAGetLastError());
+        exit(EXIT_FAILURE);
+    }
+#else
+        int nonBlocking;
+#endif
+    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET) {
+        printf("Could not create socket : %d", WSAGetLastError());   
+    }
+    servaddr.sin_family = AF_INET;
+    servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
+    servaddr.sin_port = htons(32000);
+    bind(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+#ifdef _WIN32
+    iMode = 1;
+    ioctlsocket(sockfd, FIONBIO, &iMode);
+#else
+    nonBlocking = 1;
+    if (fcntl(sockfd, F_SETFL, O_NONBLOCK, nonBlocking) == -1) {
+        printf("failed to set non-blocking socket\n");
+        exit(1); exit_program(1);
+        
+    }
+#endif
+    av_log(NULL, AV_LOG_INFO, "Created socket\n");  
+}
+/*End Proximie*/
+
 int main(int argc, char **argv)
 {
     int i, ret;
@@ -5000,6 +5104,9 @@ int main(int argc, char **argv)
         if (strcmp(output_files[i]->ctx->oformat->name, "rtp"))
             want_sdp = 0;
     }
+
+    /*Proximie*/
+    start_bitrate_server();
 
     current_time = ti = get_benchmark_time_stamps();
     if (transcode() < 0)

@@ -29,6 +29,7 @@
 #include <vpx/vp8cx.h>
 
 #include "avcodec.h"
+#include "encode.h"
 #include "internal.h"
 #include "libavutil/avassert.h"
 #include "libvpx.h"
@@ -42,6 +43,9 @@
 #include "libavutil/mathematics.h"
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
+
+/* PROXIMIE */
+struct vpx_codec_enc_cfg proximie_codec_config = { 0 };
 
 /**
  * Portion of struct vpx_codec_cx_pkt from vpx_encoder.h.
@@ -189,10 +193,10 @@ static av_cold void log_encoder_error(AVCodecContext *avctx, const char *desc)
 }
 
 static av_cold void dump_enc_cfg(AVCodecContext *avctx,
-                                 const struct vpx_codec_enc_cfg *cfg)
+                                 const struct vpx_codec_enc_cfg *cfg,
+                                 int level)
 {
     int width = -30;
-    int level = AV_LOG_DEBUG;
     int i;
 
     av_log(avctx, level, "vpx_codec_enc_cfg\n");
@@ -859,7 +863,7 @@ static av_cold int vpx_init(AVCodecContext *avctx,
             return AVERROR(EINVAL);
         }
 
-    dump_enc_cfg(avctx, &enccfg);
+    dump_enc_cfg(avctx, &enccfg, AV_LOG_DEBUG);
 
     enccfg.g_w            = avctx->width;
     enccfg.g_h            = avctx->height;
@@ -1008,14 +1012,20 @@ FF_ENABLE_DEPRECATION_WARNINGS
                    "Error parsing option '%s = %s'.\n",
                    en->key, en->value);
     }
+    /* PROXIMIE */
+    proximie_codec_config = enccfg;
+    dump_enc_cfg(avctx, &enccfg, AV_LOG_ERROR);
 
-    dump_enc_cfg(avctx, &enccfg);
+
     /* Construct Encoder Context */
     res = vpx_codec_enc_init(&ctx->encoder, iface, &enccfg, flags);
     if (res != VPX_CODEC_OK) {
+        dump_enc_cfg(avctx, &enccfg, AV_LOG_WARNING);
         log_encoder_error(avctx, "Failed to initialize encoder");
         return AVERROR(EINVAL);
     }
+    dump_enc_cfg(avctx, &enccfg, AV_LOG_DEBUG);
+
 #if CONFIG_LIBVPX_VP9_ENCODER
     if (avctx->codec_id == AV_CODEC_ID_VP9 && enccfg.ts_number_layers > 1) {
         memset(&svc_params, 0, sizeof(svc_params));
@@ -1565,6 +1575,31 @@ static int realloc_alpha_uv(AVCodecContext *avctx, int width, int height)
     }
 
     return 0;
+}
+
+/* PROXIMIE */
+void vpx_change_cfg(AVCodecContext* context, int64_t bitrate)
+{
+    VPxContext* ctx = context->priv_data;
+    int cq_level = 14;
+
+    /* Adjust CQ level based on bitrate */
+    if (bitrate <= 200000)          cq_level = 32;
+    else if (bitrate <= 400000)     cq_level = 30;
+    else if (bitrate <= 600000)     cq_level = 28;
+    else if (bitrate <= 800000)     cq_level = 26;
+    else if (bitrate <= 1000000)    cq_level = 24;
+    else if (bitrate <= 1200000)    cq_level = 22;
+    else if (bitrate <= 1400000)    cq_level = 20;
+    else if (bitrate <= 1600000)    cq_level = 18;
+    else if (bitrate <= 1800000)    cq_level = 16;
+    
+    av_log(NULL, AV_LOG_ERROR, "Trying to use %lld bitrate and %d CQ\n", bitrate, cq_level);
+
+    proximie_codec_config.rc_target_bitrate = av_rescale_rnd(bitrate, 1, 1000, AV_ROUND_NEAR_INF);
+    codecctl_int(context, VP8E_SET_CQ_LEVEL, cq_level);
+
+    vpx_codec_enc_config_set(&(ctx->encoder), &proximie_codec_config);
 }
 
 static int vpx_encode(AVCodecContext *avctx, AVPacket *pkt,
