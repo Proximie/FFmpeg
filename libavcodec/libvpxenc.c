@@ -44,8 +44,11 @@
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 
-/* PROXIMIE */
-struct vpx_codec_enc_cfg proximie_codec_config = { 0 };
+/* Proximie */
+struct vpx_codec_enc_cfg proximie_vpx_config = { 0 };
+struct AVRational proximie_vpx_timebase = { 0 };
+int64_t proximie_prev_timestamp = 0;
+/* End Proximie */
 
 /**
  * Portion of struct vpx_codec_cx_pkt from vpx_encoder.h.
@@ -1012,10 +1015,14 @@ FF_ENABLE_DEPRECATION_WARNINGS
                    "Error parsing option '%s = %s'.\n",
                    en->key, en->value);
     }
-    /* PROXIMIE */
-    proximie_codec_config = enccfg;
-    dump_enc_cfg(avctx, &enccfg, AV_LOG_ERROR);
 
+    /* Proximie */
+    proximie_vpx_config = enccfg;
+    proximie_vpx_timebase.den = proximie_vpx_config.g_timebase.den;
+    proximie_vpx_timebase.num = proximie_vpx_config.g_timebase.num;
+    av_log(avctx, AV_LOG_ERROR,"Initial config...\n");
+    dump_enc_cfg(avctx, &enccfg, AV_LOG_ERROR);
+    /* End Proximie */
 
     /* Construct Encoder Context */
     res = vpx_codec_enc_init(&ctx->encoder, iface, &enccfg, flags);
@@ -1024,7 +1031,8 @@ FF_ENABLE_DEPRECATION_WARNINGS
         log_encoder_error(avctx, "Failed to initialize encoder");
         return AVERROR(EINVAL);
     }
-    dump_enc_cfg(avctx, &enccfg, AV_LOG_DEBUG);
+    av_log(avctx, AV_LOG_ERROR,"New config after vpx_codec_enc_init...\n");
+    dump_enc_cfg(avctx, &enccfg, AV_LOG_WARNING);
 
 #if CONFIG_LIBVPX_VP9_ENCODER
     if (avctx->codec_id == AV_CODEC_ID_VP9 && enccfg.ts_number_layers > 1) {
@@ -1201,6 +1209,7 @@ static int storeframe(AVCodecContext *avctx, struct FrameListData *cx_frame,
         int pict_type;
         memcpy(pkt->data, cx_frame->buf, pkt->size);
         pkt->pts = pkt->dts = cx_frame->pts;
+        //printf("AV:storeframe: pts=%lld\n", pkt->pts);
 #if FF_API_CODED_FRAME
 FF_DISABLE_DEPRECATION_WARNINGS
         avctx->coded_frame->pts       = cx_frame->pts;
@@ -1577,13 +1586,14 @@ static int realloc_alpha_uv(AVCodecContext *avctx, int width, int height)
     return 0;
 }
 
-/* PROXIMIE */
-void vpx_change_cfg(AVCodecContext* context, int64_t bitrate)
+/* Proximie */
+void vpx_change_cfg(AVCodecContext* avctx, int64_t bitrate)
 {
-    VPxContext* ctx = context->priv_data;
-    int cq_level = 14;
+    VPxContext* ctx = avctx->priv_data;
 
     /* Adjust CQ level based on bitrate */
+    /*
+    int cq_level = 14;
     if (bitrate <= 200000)          cq_level = 32;
     else if (bitrate <= 400000)     cq_level = 30;
     else if (bitrate <= 600000)     cq_level = 28;
@@ -1594,13 +1604,30 @@ void vpx_change_cfg(AVCodecContext* context, int64_t bitrate)
     else if (bitrate <= 1600000)    cq_level = 18;
     else if (bitrate <= 1800000)    cq_level = 16;
     
-    av_log(NULL, AV_LOG_ERROR, "Trying to use %lld bitrate and %d CQ\n", bitrate, cq_level);
+    codecctl_int(avctx, VP8E_SET_CQ_LEVEL, cq_level);
+    */
 
-    proximie_codec_config.rc_target_bitrate = av_rescale_rnd(bitrate, 1, 1000, AV_ROUND_NEAR_INF);
-    codecctl_int(context, VP8E_SET_CQ_LEVEL, cq_level);
+    
+    // seem vpx bases bitrate on 30fps or maybe based on source decoder fps and then proportionally allocates bitrate to each frame based total bitrate at 30fps.
+    // as an example, lets assume we using 2mbps at 30mbps. if we want 1mbps at 15fps, we would specify bitrate as 2mbps and frame rate 15fps. 
+    // but if we wanted 500kbs at 15fps, we would then specify bitrate as 1mbps and fps 15fps.
+    float b = (float)bitrate * 30.0/(float)avctx->time_base.den;
+    av_log(avctx, AV_LOG_ERROR, "vpx_change_cfg: requested bitrate=%lld, calculated bitrate=%d, framerate=%d\n", bitrate, (int) b, avctx->time_base.den);
+    printf( "vpx_change_cfg: requested bitrate=%lld, calculated bitrate=%d, framerate=%d\n", bitrate, (int) b, avctx->time_base.den);
+    bitrate=(int)b;
 
-    vpx_codec_enc_config_set(&(ctx->encoder), &proximie_codec_config);
+    proximie_vpx_config.rc_target_bitrate = av_rescale_rnd(bitrate, 1, 1000, AV_ROUND_NEAR_INF);
+
+    // reenabled for test... // keep config timebase unchanged as its fixed in vpx config via timebase_ratio and cannot be adjusted past init
+     proximie_vpx_config.g_timebase.num = avctx->time_base.num;
+     proximie_vpx_config.g_timebase.den = avctx->time_base.den;
+
+    av_log(avctx, AV_LOG_ERROR,"New config...\n");
+    dump_enc_cfg(avctx, &proximie_vpx_config, AV_LOG_ERROR);
+
+    vpx_codec_enc_config_set(&(ctx->encoder), &proximie_vpx_config);
 }
+/* End Proximie */
 
 static int vpx_encode(AVCodecContext *avctx, AVPacket *pkt,
                       const AVFrame *frame, int *got_packet)
@@ -1633,6 +1660,27 @@ static int vpx_encode(AVCodecContext *avctx, AVPacket *pkt,
             rawimg_alpha->stride[VPX_PLANE_Y] = frame->linesize[3];
         }
         timestamp                   = frame->pts;
+#if 0
+        /* Proximie */
+        /* Rescale timestamp to original vpx timebase as source timebase can varry based on adaptive streaming variable frame rate
+           Another way of doing this could be adjusting vpx timebase to match source timebase via vpx_codec_enc_config_set();
+           however, there seems to exit bug in vpx library that timebase_ratio gets calculated only during vpx_init and does not get recalculated
+           in vpx_codec_enc_config_set().
+        */
+        timestamp = av_rescale_q(timestamp, avctx->time_base, proximie_vpx_timebase);
+        /* Dont allow timestamps to go down, this can happen if timebases changing significantly.
+          keep old one in such case for few freames until timestamps catchup.
+         */
+        if(timestamp>proximie_prev_timestamp) {
+            proximie_prev_timestamp = timestamp;
+        } else {
+            printf("AV: vpx_encode: smaller timestamp detected, new timestamp=%lld, old timestamp=%lld\n",timestamp,proximie_prev_timestamp);
+            timestamp = proximie_prev_timestamp;
+        }
+        //printf("AV: vpx_encode: initial pts=%lld, adjusted timestamp=%lld\n",frame->pts,timestamp);
+        /* End Proximie */
+#endif
+
 #if VPX_IMAGE_ABI_VERSION >= 4
         switch (frame->color_range) {
         case AVCOL_RANGE_MPEG:
