@@ -123,11 +123,12 @@
 
 /*Proximie*/
 #ifdef _WIN32
-SOCKET sockfd=-1;
+SOCKET px_sockfd=-1;
 #else
-int sockfd=-1;
+int px_sockfd=-1;
 #endif
-int as_listen_port = 32000;
+static int px_listen_port = 32000;
+static char px_rcv_buf[512];
 /*End Proximie*/
 
 const char program_name[] = "ffmpeg";
@@ -4829,6 +4830,96 @@ static int transcode_step(void)
     return reap_filters(0);
 }
 
+/* Proximie */
+static void px_process(void)
+{
+    int bitrate=0;
+    int fps=0;
+    int tmp_bitrate;
+    int tmp_fps;
+    int rcv_size;
+    OutputStream* enc_ost;
+    AVCodecContext* enc_ctx;
+    json_error_t error;
+    json_t *root;
+
+    rcv_size = recvfrom(px_sockfd, px_rcv_buf, sizeof(px_rcv_buf)-1, 0, NULL, NULL);
+    if (rcv_size >= 4) {
+        px_rcv_buf[rcv_size]='\0';
+
+        // for testing from test app
+        if(rcv_size==4) {
+            int b = *((uint32_t*)px_rcv_buf);
+            b = b<10000?b*1000:b;/*workaround for test app sending in kb*/
+            if (b <= 200000)          strcpy(px_rcv_buf, "{ \"bitrate\":200000, \"fps\":6 }");  //0
+            else if (b <= 400000)     strcpy(px_rcv_buf, "{ \"bitrate\":400000, \"fps\":8 }");  //1
+            else if (b <= 600000)     strcpy(px_rcv_buf, "{ \"bitrate\":600000, \"fps\":10 }"); //2
+            else if (b <= 800000)     strcpy(px_rcv_buf, "{ \"bitrate\":800000, \"fps\":12 }"); //3
+            else if (b <= 1000000)    strcpy(px_rcv_buf, "{ \"bitrate\":1000000, \"fps\":14 }");//4
+            else if (b <= 1200000)    strcpy(px_rcv_buf, "{ \"bitrate\":1200000, \"fps\":16 }");//5
+            else if (b <= 1400000)    strcpy(px_rcv_buf, "{ \"bitrate\":1400000, \"fps\":18 }");//6
+            else if (b <= 1600000)    strcpy(px_rcv_buf, "{ \"bitrate\":1600000, \"fps\":20 }");//7
+            else if (b <= 1800000)    strcpy(px_rcv_buf, "{ \"bitrate\":1800000, \"fps\":22 }");//8
+            else                      strcpy(px_rcv_buf, "{ \"bitrate\":2000000, \"fps\":24 }");//9
+        }
+
+        /* Parse the JSON payload */
+        av_log(NULL, AV_LOG_WARNING, "transcode: received payload=%s\n",px_rcv_buf);
+        root = json_loads(px_rcv_buf, 0, &error);
+        if(!root) {
+            av_log(NULL, AV_LOG_ERROR, "transcode: json_loads() failed for payload=%s\n",px_rcv_buf);
+            return;
+        }
+        tmp_bitrate = json_integer_value(json_object_get(root, "bitrate"));
+        tmp_fps = json_integer_value(json_object_get(root, "fps"));
+        json_decref(root);
+
+        for (int i = 0; i < nb_output_streams; i++) {
+            enc_ost = output_streams[i];
+            
+            /* Ignore non-realtime streaming cases */
+            if (enc_ost->attachment_filename || enc_ost->stream_copy)
+                return;
+
+            enc_ctx = enc_ost->enc_ctx;
+            if (enc_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
+                
+                av_log(NULL, AV_LOG_ERROR, "transcode: requested bitrate=%d, fps=%d for stream %d, old  bit_rate=%lld, bit_rate_tolerance=%d, rc_max_rate=%lld, rc_min_rate=%lld, rc_buffer_size=%d\n", tmp_bitrate, tmp_fps, i, enc_ctx->bit_rate,enc_ctx->bit_rate_tolerance,enc_ctx->rc_max_rate,enc_ctx->rc_min_rate,enc_ctx->rc_buffer_size);
+                //av_log(NULL, AV_LOG_ERROR, "width=%d, height=%d, pix_fmt=%d, flags=%d, flags2=%d ticks_per_frame=%d\n", enc_ctx->width, enc_ctx->height, enc_ctx->pix_fmt, enc_ctx->flags, enc_ctx->flags2, enc_ctx->ticks_per_frame);
+                //av_log(NULL, AV_LOG_ERROR, "ost_fps=%d - %d, ost_maxfps=%d, ctx_fps=%d, st_avgfps=%d \n", enc_ost->frame_rate.num, enc_ost->frame_rate.den, enc_ost->max_frame_rate.num, enc_ctx->framerate.num, enc_ost->st->avg_frame_rate.num);
+                //av_log(NULL, AV_LOG_ERROR, "sync_opts=%lld, frame_number=%d, first_pts=%lld, last_mux_dts=%lld, mux_timebase=%d, enc_timebase=%d \n", enc_ost->sync_opts, enc_ost->frame_number,enc_ost->first_pts,enc_ost->last_mux_dts,enc_ost->mux_timebase.den,enc_ost->enc_timebase.den);
+        
+                /* frame rate change */
+                if(tmp_fps>0 && tmp_fps<=60) {
+                    fps = tmp_fps;
+                    /* AVTODO: check if its safe todo these changes here in particular if there is frame being procesed with different timebase stamps in parraler, 
+                    if we adjust timebase while its being processed, the resulting timestamp on the frame migth not be correct after its processed. should be fine, but check */
+                    enc_ost->frame_rate.num=fps;
+                    init_encoder_time_base(enc_ost, av_inv_q(enc_ost->frame_rate));
+                    enc_ctx->framerate = enc_ost->frame_rate;
+                    enc_ost->st->avg_frame_rate = enc_ost->frame_rate;
+                    // Reinitialize PTS calculations... ffmpeg uses fps and frame counts for its internal timestamp calculations
+                    enc_ost->sync_opts = 0;
+                    enc_ost->frame_number = 0;
+                }
+
+                if(tmp_bitrate>0 && tmp_bitrate<=20000000) {
+                    bitrate=tmp_bitrate;
+                    enc_ctx->bit_rate = bitrate;
+                    enc_ctx->rc_max_rate = bitrate;
+                    enc_ctx->rc_min_rate = bitrate;
+                    enc_ctx->bit_rate_tolerance = bitrate * 2;
+                    enc_ctx->rc_buffer_size = bitrate / 2;
+                }
+
+                if(fps || bitrate)
+                    vpx_change_cfg(enc_ctx, enc_ctx->bit_rate);
+            }
+        }  
+    }
+}
+/*End Proximie*/
+
 /*
  * The following code is the main loop of the file converter
  */
@@ -4841,17 +4932,6 @@ static int transcode(void)
     int64_t timer_start;
     int64_t total_packets_written = 0;
     
-/*Proximie*/
-    char socket_data[512];
-    int data;
-    int bitrate;
-    int fps;
-    OutputStream* enc_ost;
-    AVCodecContext* enc_ctx;
-
-    av_log(NULL, AV_LOG_ERROR, "COMPILED JSON LIB VERSION IS %s\n", jansson_version_str());
-/*End Proximie*/
-
     ret = transcode_init();
     if (ret < 0)
         goto fail;
@@ -4882,77 +4962,7 @@ static int transcode(void)
         }
 
         /*Proximie*/
-        data = recvfrom(sockfd, socket_data, sizeof(socket_data)-1, 0, NULL, NULL);
-        if (data >= 4) {
-            json_error_t error;
-            json_t *root;
-            socket_data[data]='\0';
-
-            // for testing
-            if(data==4) {
-                strcpy(socket_data, "{ \"bitrate\":1000000, \"fps\":12 }");
-                //bitrate = *((uint32_t*)socket_data);
-                //bitrate = bitrate<10000?bitrate*1000:bitrate;/*workaround for test app sending in kb*/
-            }
-
-            /* Parse the JSON payload */
-            av_log(NULL, AV_LOG_WARNING, "transcode: received payload=%s\n",socket_data);
-            root = json_loads(socket_data, 0, &error);
-        	if(!root) {
-                av_log(NULL, AV_LOG_ERROR, "transcode: json_loads() failed for payload=%s\n",socket_data);
-                continue;
-            }
-            bitrate = json_integer_value(json_object_get(root, "bitrate"));
-            fps = json_integer_value(json_object_get(root, "fps"));
-			json_decref(root);
-
-            for (i = 0; i < nb_output_streams; i++) {
-                enc_ost = output_streams[i];
-                if (enc_ost->attachment_filename)
-                    continue;
-
-                //enc_ctx = enc_ost->stream_copy ? enc_ost->st->codecpar :  enc_ost->enc_ctx;
-                if (enc_ost->stream_copy) {
-                    av_log(NULL, AV_LOG_ERROR, "Unexpected situation happend just skip \n");
-                    continue;
-                }
-
-                enc_ctx = enc_ost->enc_ctx;
-                if (enc_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-                    //int fps = 24;
-                    
-                    av_log(NULL, AV_LOG_ERROR, "transcode: new bitrate=%d, fps=%d for stream %d, old  bit_rate=%lld, bit_rate_tolerance=%d, rc_max_rate=%lld, rc_min_rate=%lld, rc_buffer_size=%d\n", bitrate, fps, i, enc_ctx->bit_rate,enc_ctx->bit_rate_tolerance,enc_ctx->rc_max_rate,enc_ctx->rc_min_rate,enc_ctx->rc_buffer_size);
-                    //av_log(NULL, AV_LOG_ERROR, "width=%d, height=%d, pix_fmt=%d, flags=%d, flags2=%d ticks_per_frame=%d\n", enc_ctx->width, enc_ctx->height, enc_ctx->pix_fmt, enc_ctx->flags, enc_ctx->flags2, enc_ctx->ticks_per_frame);
-                    //av_log(NULL, AV_LOG_ERROR, "ost_fps=%d - %d, ost_maxfps=%d, ctx_fps=%d, st_avgfps=%d \n", enc_ost->frame_rate.num, enc_ost->frame_rate.den, enc_ost->max_frame_rate.num, enc_ctx->framerate.num, enc_ost->st->avg_frame_rate.num);
-                    //av_log(NULL, AV_LOG_ERROR, "sync_opts=%lld, frame_number=%d, first_pts=%lld, last_mux_dts=%lld, mux_timebase=%d, enc_timebase=%d \n", enc_ost->sync_opts, enc_ost->frame_number,enc_ost->first_pts,enc_ost->last_mux_dts,enc_ost->mux_timebase.den,enc_ost->enc_timebase.den);
-                    printf("transcode(): new bitrate=%d, fps=%d for stream %d, old bit_rate=%lld, bit_rate_tolerance=%d, rc_max_rate=%lld, rc_min_rate=%lld, rc_buffer_size=%d\n", bitrate, fps, i, enc_ctx->bit_rate,enc_ctx->bit_rate_tolerance,enc_ctx->rc_max_rate,enc_ctx->rc_min_rate,enc_ctx->rc_buffer_size);
-         
-                    /* frame rate change */
-                    if(fps>0 && fps<=60) {
-                        /* AVTODO: check if its safe todo these changes here in particular if there is frame being procesed with different timebase stamps in parraler, 
-                        if we adjust timebase while its being processed, the resulting timestamp on the frame migth not be correct after its processed. should be fine, but check */
-                        enc_ost->frame_rate.num=fps;
-                        init_encoder_time_base(enc_ost, av_inv_q(enc_ost->frame_rate));
-                        enc_ctx->framerate = enc_ost->frame_rate;
-                        enc_ost->st->avg_frame_rate = enc_ost->frame_rate;
-                        // Reinitialize PTS calculations... ffmpeg uses fps and frame counts for its internal timestamp calculations
-                        enc_ost->sync_opts = 0;
-                        enc_ost->frame_number = 0;
-                    }
-
-                    /* these dont seem to do much except used for display/stats
-                    enc_ctx->bit_rate = bitrate;
-                    enc_ctx->rc_max_rate = bitrate;
-                    enc_ctx->rc_min_rate = bitrate;
-                    enc_ctx->bit_rate_tolerance = bitrate * 2;
-                    */
-                    //enc_ctx->rc_buffer_size = bitrate / 2;
-
-                    if(fps>0 || bitrate>0)
-                        vpx_change_cfg(enc_ctx, bitrate);
-                }
-            }  
-        }
+        px_process();
         /*End Proximie*/
 
         ret = transcode_step();
@@ -5110,41 +5120,41 @@ static void log_callback_null(void *ptr, int level, const char *fmt, va_list vl)
 }
 
 /*Proximie*/
-static void start_bitrate_server( void ) 
+static void px_start_udp_listener( void ) 
 {
     struct sockaddr_in servaddr;
 #ifdef _WIN32
         u_long iMode;
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("Failed. Error Code : %d", WSAGetLastError());
+        printf("px_start_udp_listener: WSAStartup Failed. Error Code : %d", WSAGetLastError());
         exit(EXIT_FAILURE);
     }
 #else
         int nonBlocking;
 #endif
-    if ((sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET) {
-        printf("Could not create socket : %d", WSAGetLastError());   
+    if ((px_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET) {
+        printf("px_start_udp_listener: Could not create socket : %d", WSAGetLastError());   
     }
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
-    servaddr.sin_port = htons(as_listen_port);
+    servaddr.sin_port = htons(px_listen_port);
 
-    bind(sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
-// TODO: chec for binding error
+    bind(px_sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
+// AVTODO: chec for binding error
 #ifdef _WIN32
     iMode = 1;
-    ioctlsocket(sockfd, FIONBIO, &iMode);
+    ioctlsocket(px_sockfd, FIONBIO, &iMode);
 #else
     nonBlocking = 1;
-    if (fcntl(sockfd, F_SETFL, O_NONBLOCK, nonBlocking) == -1) {
-        printf("failed to set non-blocking socket\n");
+    if (fcntl(px_sockfd, F_SETFL, O_NONBLOCK, nonBlocking) == -1) {
+        printf("px_start_udp_listener: failed to set non-blocking socket\n");
         exit(1); exit_program(1);
         
     }
 #endif
-    av_log(NULL, AV_LOG_INFO, "Created socket on port %d\n", as_listen_port);  
+    av_log(NULL, AV_LOG_INFO, "px_start_udp_listener: Created socket on port %d\n", px_listen_port);  
 }
 /*End Proximie*/
 
@@ -5165,7 +5175,7 @@ int main(int argc, char **argv)
     /*Proximie*/
     i = locate_option(argc, argv, options, "as_listen_port");
     if (i) {
-        as_listen_port = atoi(argv[i+1]);
+        px_listen_port = atoi(argv[i+1]);
     }
     /*End Proximie*/
 
@@ -5205,8 +5215,9 @@ int main(int argc, char **argv)
             want_sdp = 0;
     }
 
-    /*Proximie*/
-    start_bitrate_server();
+    /* Proximie */
+    px_start_udp_listener();
+    /* End Proximie */
 
     current_time = ti = get_benchmark_time_stamps();
     if (transcode() < 0)
