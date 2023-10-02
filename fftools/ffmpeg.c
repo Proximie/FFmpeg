@@ -77,8 +77,7 @@
 #include "libavutil/thread.h"
 #include "libavutil/threadmessage.h"
 #include "libavcodec/mathops.h"
-/*Proximie*/
-#include "libavcodec/encode.h"
+#include "libavcodec/encode.h" /* Proximie */
 #include "libavformat/os_support.h"
 
 # include "libavfilter/avfilter.h"
@@ -1457,7 +1456,7 @@ static void do_video_out(OutputFile *of,
            }
 #else
             av_packet_rescale_ts(pkt, enc->time_base, ost->mux_timebase);
-#endif            
+#endif
             /* End Proximie */
       
             if (debug_ts) {
@@ -4877,23 +4876,23 @@ static void px_process(void)
         for (int i = 0; i < nb_output_streams; i++) {
             enc_ost = output_streams[i];
             
-            /* Ignore non-realtime streaming cases */
+            if (!enc_ost)
+                return;
+            if (!enc_ost->enc_ctx)
+                return;
+ 
+             /* Ignore non-realtime streaming cases */
             if (enc_ost->attachment_filename || enc_ost->stream_copy)
                 return;
-
+ 
             enc_ctx = enc_ost->enc_ctx;
             if (enc_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
                 
-                av_log(NULL, AV_LOG_ERROR, "transcode: requested bitrate=%d, fps=%d for stream %d, old  bit_rate=%lld, bit_rate_tolerance=%d, rc_max_rate=%lld, rc_min_rate=%lld, rc_buffer_size=%d\n", tmp_bitrate, tmp_fps, i, enc_ctx->bit_rate,enc_ctx->bit_rate_tolerance,enc_ctx->rc_max_rate,enc_ctx->rc_min_rate,enc_ctx->rc_buffer_size);
-                //av_log(NULL, AV_LOG_ERROR, "width=%d, height=%d, pix_fmt=%d, flags=%d, flags2=%d ticks_per_frame=%d\n", enc_ctx->width, enc_ctx->height, enc_ctx->pix_fmt, enc_ctx->flags, enc_ctx->flags2, enc_ctx->ticks_per_frame);
-                //av_log(NULL, AV_LOG_ERROR, "ost_fps=%d - %d, ost_maxfps=%d, ctx_fps=%d, st_avgfps=%d \n", enc_ost->frame_rate.num, enc_ost->frame_rate.den, enc_ost->max_frame_rate.num, enc_ctx->framerate.num, enc_ost->st->avg_frame_rate.num);
-                //av_log(NULL, AV_LOG_ERROR, "sync_opts=%lld, frame_number=%d, first_pts=%lld, last_mux_dts=%lld, mux_timebase=%d, enc_timebase=%d \n", enc_ost->sync_opts, enc_ost->frame_number,enc_ost->first_pts,enc_ost->last_mux_dts,enc_ost->mux_timebase.den,enc_ost->enc_timebase.den);
-        
-                /* frame rate change */
+                av_log(NULL, AV_LOG_WARNING, "transcode: requested bitrate=%d, fps=%d for stream %d, old bit_rate=%lld, bit_rate_tolerance=%d, rc_max_rate=%lld, rc_min_rate=%lld, rc_buffer_size=%d\n", tmp_bitrate, tmp_fps, i, enc_ctx->bit_rate,enc_ctx->bit_rate_tolerance,enc_ctx->rc_max_rate,enc_ctx->rc_min_rate,enc_ctx->rc_buffer_size);
+  
+                  /* frame rate change */
                 if(tmp_fps>0 && tmp_fps<=60) {
                     fps = tmp_fps;
-                    /* AVTODO: check if its safe todo these changes here in particular if there is frame being procesed with different timebase stamps in parraler, 
-                    if we adjust timebase while its being processed, the resulting timestamp on the frame migth not be correct after its processed. should be fine, but check */
                     enc_ost->frame_rate.num=fps;
                     init_encoder_time_base(enc_ost, av_inv_q(enc_ost->frame_rate));
                     enc_ctx->framerate = enc_ost->frame_rate;
@@ -4913,7 +4912,7 @@ static void px_process(void)
                 }
 
                 if(fps || bitrate)
-                    vpx_change_cfg(enc_ctx, enc_ctx->bit_rate);
+                    px_ff_encode_change_cfg(enc_ctx);
             }
         }  
     }

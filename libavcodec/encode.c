@@ -680,3 +680,16 @@ FF_ENABLE_DEPRECATION_WARNINGS
 
     return 0;
 }
+
+/* Proximie */
+void px_ff_encode_change_cfg(AVCodecContext *avctx)
+{
+    if (avctx && avctx->codec && avctx->codec->change_config) {
+        av_log(avctx, AV_LOG_INFO, "px_ff_encode_change_cfg: requested bitrate=%lld, framerate=%d. \n", avctx->bit_rate, avctx->time_base.den);
+        avctx->codec->change_config(avctx);
+    } else {
+        av_log(NULL, AV_LOG_WARNING, "px_ff_encode_change_cfg: invalid params/unsupported codec... \n");
+        /* Note, for now only VPX is expected or supported, add support for other codecs when needed */
+    }
+}
+/* End Proximie */

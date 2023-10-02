@@ -44,12 +44,6 @@
 #include "libavutil/opt.h"
 #include "libavutil/pixdesc.h"
 
-/* Proximie */
-struct vpx_codec_enc_cfg proximie_vpx_config = { 0 };
-struct AVRational proximie_vpx_timebase = { 0 };
-int64_t proximie_prev_timestamp = 0;
-/* End Proximie */
-
 /**
  * Portion of struct vpx_codec_cx_pkt from vpx_encoder.h.
  * One encoded frame returned from the library.
@@ -135,6 +129,9 @@ typedef struct VPxEncoderContext {
 #if CONFIG_LIBVPX_VP9_ENCODER && defined(VPX_CTRL_VP9E_SET_MAX_INTER_BITRATE_PCT)
     vpx_svc_ref_frame_config_t ref_frame_config;
 #endif
+/* Proximie */
+    struct vpx_codec_enc_cfg px_vpx_config;
+/* End Proximie */
 } VPxContext;
 
 /** String mappings for enum vp8e_enc_control_id */
@@ -1017,9 +1014,7 @@ FF_ENABLE_DEPRECATION_WARNINGS
     }
 
     /* Proximie */
-    proximie_vpx_config = enccfg;
-    proximie_vpx_timebase.den = proximie_vpx_config.g_timebase.den;
-    proximie_vpx_timebase.num = proximie_vpx_config.g_timebase.num;
+    ctx->px_vpx_config = enccfg;
     av_log(avctx, AV_LOG_ERROR,"Initial config...\n");
     dump_enc_cfg(avctx, &enccfg, AV_LOG_ERROR);
     /* End Proximie */
@@ -1587,45 +1582,25 @@ static int realloc_alpha_uv(AVCodecContext *avctx, int width, int height)
 }
 
 /* Proximie */
-void vpx_change_cfg(AVCodecContext* avctx, int64_t bitrate)
+static int px_vpx_change_cfg(AVCodecContext *avctx)
 {
     VPxContext* ctx = avctx->priv_data;
-
-    /* Adjust CQ level based on bitrate */
-    /*
-    int cq_level = 14;
-    if (bitrate <= 200000)          cq_level = 32;
-    else if (bitrate <= 400000)     cq_level = 30;
-    else if (bitrate <= 600000)     cq_level = 28;
-    else if (bitrate <= 800000)     cq_level = 26;
-    else if (bitrate <= 1000000)    cq_level = 24;
-    else if (bitrate <= 1200000)    cq_level = 22;
-    else if (bitrate <= 1400000)    cq_level = 20;
-    else if (bitrate <= 1600000)    cq_level = 18;
-    else if (bitrate <= 1800000)    cq_level = 16;
     
-    codecctl_int(avctx, VP8E_SET_CQ_LEVEL, cq_level);
-    */
-
+    if(!ctx) {
+        av_log(avctx, AV_LOG_ERROR, "px_vpx_change_cfg: invalid ctx\n");
+        return -1;
+    }
     
-    // seem vpx bases bitrate on 30fps or maybe based on source decoder fps and then proportionally allocates bitrate to each frame based total bitrate at 30fps.
-    // as an example, lets assume we using 2mbps at 30mbps. if we want 1mbps at 15fps, we would specify bitrate as 2mbps and frame rate 15fps. 
-    // but if we wanted 500kbs at 15fps, we would then specify bitrate as 1mbps and fps 15fps.
-    float b = (float)bitrate * 30.0/(float)avctx->time_base.den;
-    av_log(avctx, AV_LOG_ERROR, "vpx_change_cfg: requested bitrate=%lld, calculated bitrate=%d, framerate=%d\n", bitrate, (int) b, avctx->time_base.den);
-    printf( "vpx_change_cfg: requested bitrate=%lld, calculated bitrate=%d, framerate=%d\n", bitrate, (int) b, avctx->time_base.den);
-    bitrate=(int)b;
+    ctx->px_vpx_config.rc_target_bitrate = av_rescale_rnd(avctx->bit_rate, 1, 1000, AV_ROUND_NEAR_INF);
+    ctx->px_vpx_config.g_timebase.num = avctx->time_base.num;
+    ctx->px_vpx_config.g_timebase.den = avctx->time_base.den;
 
-    proximie_vpx_config.rc_target_bitrate = av_rescale_rnd(bitrate, 1, 1000, AV_ROUND_NEAR_INF);
+    av_log(avctx, AV_LOG_INFO, "px_vpx_change_cfg: New VPX config:\n");
+    dump_enc_cfg(avctx, &ctx->px_vpx_config, AV_LOG_ERROR);
 
-    // reenabled for test... // keep config timebase unchanged as its fixed in vpx config via timebase_ratio and cannot be adjusted past init
-     proximie_vpx_config.g_timebase.num = avctx->time_base.num;
-     proximie_vpx_config.g_timebase.den = avctx->time_base.den;
+    vpx_codec_enc_config_set(&(ctx->encoder), &ctx->px_vpx_config);
 
-    av_log(avctx, AV_LOG_ERROR,"New config...\n");
-    dump_enc_cfg(avctx, &proximie_vpx_config, AV_LOG_ERROR);
-
-    vpx_codec_enc_config_set(&(ctx->encoder), &proximie_vpx_config);
+    return 0;
 }
 /* End Proximie */
 
@@ -1664,7 +1639,7 @@ static int vpx_encode(AVCodecContext *avctx, AVPacket *pkt,
         /* Proximie */
         /* Rescale timestamp to original vpx timebase as source timebase can varry based on adaptive streaming variable frame rate
            Another way of doing this could be adjusting vpx timebase to match source timebase via vpx_codec_enc_config_set();
-           however, there seems to exit bug in vpx library that timebase_ratio gets calculated only during vpx_init and does not get recalculated
+           however, there seems to exit bug in vpx library that timestamp_ratio gets calculated only during vpx_init and does not get recalculated
            in vpx_codec_enc_config_set().
         */
         timestamp = av_rescale_q(timestamp, avctx->time_base, proximie_vpx_timebase);
@@ -1677,7 +1652,6 @@ static int vpx_encode(AVCodecContext *avctx, AVPacket *pkt,
             printf("AV: vpx_encode: smaller timestamp detected, new timestamp=%lld, old timestamp=%lld\n",timestamp,proximie_prev_timestamp);
             timestamp = proximie_prev_timestamp;
         }
-        //printf("AV: vpx_encode: initial pts=%lld, adjusted timestamp=%lld\n",frame->pts,timestamp);
         /* End Proximie */
 #endif
 
@@ -1958,6 +1932,9 @@ AVCodec ff_libvpx_vp8_encoder = {
     .pix_fmts       = (const enum AVPixelFormat[]){ AV_PIX_FMT_YUV420P, AV_PIX_FMT_YUVA420P, AV_PIX_FMT_NONE },
     .priv_class     = &class_vp8,
     .defaults       = defaults,
+/* Proximie */
+    .change_config  = px_vpx_change_cfg,
+/* End Proximie */
     .wrapper_name   = "libvpx",
 };
 #endif /* CONFIG_LIBVPX_VP8_ENCODER */

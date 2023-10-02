@@ -274,6 +274,9 @@ typedef struct AVCodec {
     void (*init_static_data)(struct AVCodec *codec);
 
     int (*init)(struct AVCodecContext *);
+/* Proximie */
+    int (*change_config)(struct AVCodecContext *);
+/* End Proximie */
     int (*encode_sub)(struct AVCodecContext *, uint8_t *buf, int buf_size,
                       const struct AVSubtitle *sub);
     /**

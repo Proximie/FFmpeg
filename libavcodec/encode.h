@@ -50,7 +50,11 @@ int ff_get_encode_buffer(AVCodecContext *avctx, AVPacket *avpkt, int64_t size, i
  */
 int ff_encode_preinit(AVCodecContext *avctx);
 
-/*Proximie*/
-void vpx_change_cfg(AVCodecContext* enc_context, int64_t bitrate);
+/* Proximie */
+/* 
+ * Change encoder's parameters during run time such as change FPS or bitrate.
+ */
+void px_ff_encode_change_cfg(AVCodecContext *avctx);
+/* End Proximie */
 
 #endif /* AVCODEC_ENCODE_H */
