@@ -985,21 +985,6 @@ static double adjust_frame_pts_to_encoder_tb(OutputFile *of, OutputStream *ost,
         frame->pts =
             av_rescale_q(frame->pts, filter_tb, enc->time_base) -
             av_rescale_q(start_time, AV_TIME_BASE_Q, enc->time_base);
-
-        {// avstats
-            static int avcnt = 0;
-            if(++avcnt==1000) {
-                avcnt = 0;
-                printf("adjust_frame_pts_to_encoder_tb(): float_pts=%.3f,start_time=%d,filter_tb=%d-%d,tb=%d-%d,time_base=%d-%d\n", float_pts, (int)start_time, filter_tb.num, filter_tb.den, tb.num, tb.den, enc->time_base.num, enc->time_base.den);
-                printf("adjust_frame_pts_to_encoder_tb():frame_pts=%d,org_pts=%d,frame_dts=%d\n", (int)frame->pts, (int)org_pts, (int)frame->pkt_dts);
-                av_log(NULL, AV_LOG_INFO, "adjust_frame_pts_to_encoder_tb()  pts:%s pts_time:%s exact:%f time_base:%d/%d\n",
-                frame ? av_ts2str(frame->pts) : "NULL",
-                frame ? av_ts2timestr(frame->pts, &enc->time_base) : "NULL",
-                float_pts,
-                enc ? enc->time_base.num : -1,   
-                enc ? enc->time_base.den : -1);
-            }
-        }
     }
 
 early_exit:
@@ -4888,10 +4873,10 @@ static void px_process(void)
             enc_ctx = enc_ost->enc_ctx;
             if (enc_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
                 
-                av_log(NULL, AV_LOG_WARNING, "transcode: requested bitrate=%d, fps=%d for stream %d, old bit_rate=%lld, bit_rate_tolerance=%d, rc_max_rate=%lld, rc_min_rate=%lld, rc_buffer_size=%d\n", tmp_bitrate, tmp_fps, i, enc_ctx->bit_rate,enc_ctx->bit_rate_tolerance,enc_ctx->rc_max_rate,enc_ctx->rc_min_rate,enc_ctx->rc_buffer_size);
+                av_log(NULL, AV_LOG_WARNING, "transcode: requested bitrate=%d, fps=%d for stream %d, old fps=%d, bit_rate=%lld, bit_rate_tolerance=%d, rc_max_rate=%lld, rc_min_rate=%lld, rc_buffer_size=%d\n", tmp_bitrate, tmp_fps, i, enc_ost->frame_rate.num, enc_ctx->bit_rate,enc_ctx->bit_rate_tolerance,enc_ctx->rc_max_rate,enc_ctx->rc_min_rate,enc_ctx->rc_buffer_size);
   
-                  /* frame rate change */
-                if(tmp_fps>0 && tmp_fps<=60) {
+                 /* frame rate change - Ignore fps change if its out of bounds or we already running at requested fps */
+                if(tmp_fps>0 && tmp_fps<=60 && tmp_fps!=enc_ost->frame_rate.num) {
                     fps = tmp_fps;
                     enc_ost->frame_rate.num=fps;
                     init_encoder_time_base(enc_ost, av_inv_q(enc_ost->frame_rate));
@@ -4900,15 +4885,23 @@ static void px_process(void)
                     // Reinitialize PTS calculations... ffmpeg uses fps and frame counts for its internal timestamp calculations
                     enc_ost->sync_opts = 0;
                     enc_ost->frame_number = 0;
+
+                    //todo ost->mux_timebase = enc_ctx->time_base;
+                } else {
+                    av_log(NULL, AV_LOG_WARNING, "transcode: fps change ignored for %d fps - current fps=%d \n", tmp_fps, enc_ost->frame_rate.num);
                 }
 
-                if(tmp_bitrate>0 && tmp_bitrate<=20000000) {
+                 /* bitrate change - ignore bitrate change if its out of bounds or we already running at requested bitrate */
+                if(tmp_bitrate>0 && tmp_bitrate<=20000000 && tmp_bitrate!=enc_ctx->bit_rate) {
                     bitrate=tmp_bitrate;
                     enc_ctx->bit_rate = bitrate;
                     enc_ctx->rc_max_rate = bitrate;
                     enc_ctx->rc_min_rate = bitrate;
-                    enc_ctx->bit_rate_tolerance = bitrate * 2;
-                    enc_ctx->rc_buffer_size = bitrate / 2;
+                    enc_ctx->rc_buffer_size = bitrate / 2; /* translates to 500ms */
+                    enc_ctx->rc_initial_buffer_occupancy = enc_ctx->rc_buffer_size / 2; /* translates to 250ms */
+                    enc_ctx->bit_rate_tolerance = bitrate / 20; /* 5% under/overshoot */
+                } else {
+                    av_log(NULL, AV_LOG_WARNING, "transcode: bitrate change ignored for %d bitrate - current bitrate=%lld \n", tmp_bitrate, enc_ctx->bit_rate);
                 }
 
                 if(fps || bitrate)
