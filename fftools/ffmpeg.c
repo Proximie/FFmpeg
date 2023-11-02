@@ -34,15 +34,8 @@
 #include <stdint.h>
 
 /*Proximie*/
-#ifdef _WIN32
 #include <winsock2.h>
 #include <fcntl.h>
-#else
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <stdio.h>
-#include <arpa/inet.h>
-#endif
 #include <jansson.h> 
 /*End Proximie*/
 
@@ -121,11 +114,7 @@
 #include "libavutil/avassert.h"
 
 /*Proximie*/
-#ifdef _WIN32
 SOCKET px_sockfd=-1;
-#else
-int px_sockfd=-1;
-#endif
 static int px_listen_port = 32000;
 static char px_rcv_buf[512];
 /*End Proximie*/
@@ -973,7 +962,7 @@ static double adjust_frame_pts_to_encoder_tb(OutputFile *of, OutputStream *ost,
         AVRational filter_tb = av_buffersink_get_time_base(filter);
         AVRational tb = enc->time_base;
         int extra_bits = av_clip(29 - av_log2(tb.den), 0, 16);
-        int64_t org_pts=frame->pts;
+
         tb.den <<= extra_bits;
         float_pts =
             av_rescale_q(frame->pts, filter_tb, tb) -
@@ -1412,37 +1401,8 @@ static void do_video_out(OutputFile *of,
 
             if (pkt->pts == AV_NOPTS_VALUE && !(enc->codec->capabilities & AV_CODEC_CAP_DELAY))
                 pkt->pts = ost->sync_opts;
-            /* Proximie */
-#if 0
-// av: stopped here.. need to separate ffmpeg pts from vpx pts also make sure vpx pts do not repeat. also keep in mind vpx ptx might skip few frames and be non-contigues,
- but still increasing (i.e. when timebase is lower vs vpx timbase) thus ideally each frame would keep track of our real pts and the existing 1/24 based one.
-            /* Note: pts coming from VPX are always in 1/24 time base (see discussion above),
-               but adaptive streaming encoder has its own timebase to support variable frame rate.
-               Here we need to correct pts/dts coming from VPX to match true timestamp based on curren variable timebase.
-            */
-           {
-            int64_t pts_dif=0;
-            printf("AV: do_video_out before: pts=%lld, dts=%lld, enc->time_base=%d-%d,  ost->mux_timebase=%d-%d\n", pkt->pts, pkt->dts, enc->time_base.num, enc->time_base.den, ost->mux_timebase.num, ost->mux_timebase.den);
-            if(pkt->pts && enc->time_base.den != enc->px_prev_time_base.den) {
-                /* Timebase changed */
-                enc->px_prev_time_base.den = enc->time_base.den;
-                enc->px_new_pts_start = pkt->pts - 1; /* AVTODO: check if could duration could be more than 1... it shoulnt... */
-                enc->px_pts_offset = enc->px_last_pts;
-                enc->px_dts_offset = enc->px_last_dts;
-            }
-            pts_dif = pkt->pts - enc->px_new_pts_start;
-            ptk->pts = pts->dts = pts_dif;
+
             av_packet_rescale_ts(pkt, enc->time_base, ost->mux_timebase);
-            ptk->pts += enc->px_pts_offset;
-            ptk->dts += enc->px_dts_offset;
-            enc->px_last_pts = ptk->pts;
-            enc->px_last_dts = ptk->dts;
-            printf("AV: do_video_out after rescale: pts=%lld, dts=%lld, enc->time_base=%d-%d,  ost->mux_timebase=%d-%d\n", pkt->pts, pkt->dts, enc->time_base.num, enc->time_base.den, ost->mux_timebase.num, ost->mux_timebase.den);
-           }
-#else
-            av_packet_rescale_ts(pkt, enc->time_base, ost->mux_timebase);
-#endif
-            /* End Proximie */
       
             if (debug_ts) {
                 av_log(NULL, AV_LOG_INFO, "encoder -> type:video "
@@ -5115,37 +5075,34 @@ static void log_callback_null(void *ptr, int level, const char *fmt, va_list vl)
 static void px_start_udp_listener( void ) 
 {
     struct sockaddr_in servaddr;
-#ifdef _WIN32
-        u_long iMode;
+    u_long iMode;
     WSADATA wsa;
+
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printf("px_start_udp_listener: WSAStartup Failed. Error Code : %d", WSAGetLastError());
-        exit(EXIT_FAILURE);
+        av_log(NULL, AV_LOG_ERROR, "px_start_udp_listener: WSAStartup Failed. Error Code : %d\n", WSAGetLastError());
+        exit_program(1);
     }
-#else
-        int nonBlocking;
-#endif
+
     if ((px_sockfd = socket(AF_INET, SOCK_DGRAM, 0)) == INVALID_SOCKET) {
-        printf("px_start_udp_listener: Could not create socket : %d", WSAGetLastError());   
+        av_log(NULL, AV_LOG_ERROR, "px_start_udp_listener: socket Failed. Error Code : %d\n", WSAGetLastError());
+        exit_program(1);
     }
     servaddr.sin_family = AF_INET;
     servaddr.sin_addr.s_addr = inet_addr("127.0.0.1");
-
     servaddr.sin_port = htons(px_listen_port);
 
-    bind(px_sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr));
-// AVTODO: chec for binding error
-#ifdef _WIN32
-    iMode = 1;
-    ioctlsocket(px_sockfd, FIONBIO, &iMode);
-#else
-    nonBlocking = 1;
-    if (fcntl(px_sockfd, F_SETFL, O_NONBLOCK, nonBlocking) == -1) {
-        printf("px_start_udp_listener: failed to set non-blocking socket\n");
-        exit(1); exit_program(1);
-        
+    if (bind(px_sockfd, (struct sockaddr*)&servaddr, sizeof(servaddr)) != 0) {
+        av_log(NULL, AV_LOG_ERROR, "px_start_udp_listener: bind Failed. Error Code : %d\n", WSAGetLastError());
+        exit_program(1);
     }
-#endif
+    
+    /* Enable non-blocking mode */
+    iMode = 1;
+    if (ioctlsocket(px_sockfd, FIONBIO, &iMode) != 0) {
+        av_log(NULL, AV_LOG_ERROR, "px_start_udp_listener: ioctlsocket Failed. Error Code : %d\n", WSAGetLastError());
+        exit_program(1);
+    }
+
     av_log(NULL, AV_LOG_INFO, "px_start_udp_listener: Created socket on port %d\n", px_listen_port);  
 }
 /*End Proximie*/
