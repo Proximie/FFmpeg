@@ -469,6 +469,11 @@ typedef struct OutputStream {
     AVRational mux_timebase;
     AVRational enc_timebase;
 
+    /*Proximie*/
+    int64_t fps_reset_time; /* time fps was reset */
+    int total_frames;       /* count of frames since stream start vs frame_number that gets reset with variable frame rate changes */
+    /*End Proximie*/
+
     AVBSFContext            *bsf_ctx;
 
     AVCodecContext *enc_ctx;
@@ -579,6 +584,11 @@ typedef struct OutputFile {
     int64_t recording_time;  ///< desired length of the resulting file in microseconds == AV_TIME_BASE units
     int64_t start_time;      ///< start time in microseconds == AV_TIME_BASE units
     uint64_t limit_filesize; /* filesize limit expressed in bytes */
+
+    /*Proximie*/
+    int64_t bitrate_reset_time; /* time bitrate was reset */
+    int64_t reset_size;              /* file size at bitrate reset */
+    /*End Proximie*/
 
     int shortest;
 

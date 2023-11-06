@@ -1426,6 +1426,7 @@ static void do_video_out(OutputFile *of,
          * flush, we need to limit them here, before they go into encoder.
          */
         ost->frame_number++;
+        ost->total_frames++; /*Proximie*/
 
         if (vstats_filename && frame_size)
             do_video_stats(ost, frame_size);
@@ -1730,6 +1731,13 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     const char *hours_sign;
     int ret;
     float t;
+/*Proximie*/
+#if 1
+    float tr;
+    int64_t reset_size;
+    double cur_bitrate;
+#endif
+/*End Proximie*/
 
     if (!print_stats && !is_last_report && !progress_avio)
         return;
@@ -1753,6 +1761,14 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     if (total_size <= 0) // FIXME improve avio_size() so it works with non seekable output too
         total_size = avio_tell(oc->pb);
 
+/*Proximie*/
+#if 1
+    tr = output_files[0]->bitrate_reset_time ? (cur_time-output_files[0]->bitrate_reset_time) / 1000000.0 : t;
+    reset_size = total_size - output_files[0]->reset_size;
+    cur_bitrate = tr>1 && reset_size >= 0 ? reset_size * 8 / tr / 1000.0 : -1;
+#endif
+/*End Proximie*/
+
     vid = 0;
     av_bprint_init(&buf, 0, AV_BPRINT_SIZE_AUTOMATIC);
     av_bprint_init(&buf_script, 0, AV_BPRINT_SIZE_AUTOMATIC);
@@ -1770,11 +1786,22 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
         }
         if (!vid && enc->codec_type == AVMEDIA_TYPE_VIDEO) {
             float fps;
-
+/*Proximie*/
+#if 1
+            float cur_fps;
+            tr = ost->fps_reset_time ? (cur_time-ost->fps_reset_time) / 1000000.0 : t;
+            frame_number = ost->total_frames;
+            fps = t > 1 ? frame_number / t : 0;
+            cur_fps = tr > 1 ? ost->frame_number / tr : -1;
+            av_bprintf(&buf, "frame=%5d avgfps=%3.*f fps=%3.*f q=%3.1f ",
+                     frame_number, fps < 9.95, fps, cur_fps>0.0?cur_fps < 9.95:fps < 9.95, cur_fps>0.0?cur_fps:fps, q);
+#else
             frame_number = ost->frame_number;
             fps = t > 1 ? frame_number / t : 0;
             av_bprintf(&buf, "frame=%5d fps=%3.*f q=%3.1f ",
                      frame_number, fps < 9.95, fps, q);
+#endif
+/*End Proximie*/
             av_bprintf(&buf_script, "frame=%d\n", frame_number);
             av_bprintf(&buf_script, "fps=%.2f\n", fps);
             av_bprintf(&buf_script, "stream_%d_%d_q=%.1f\n",
@@ -1858,10 +1885,22 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     }
 
     if (bitrate < 0) {
+/*Proximie*/
+#if 1
+        av_bprintf(&buf, "avgbitrate=N/A bitrate=N/A");
+#else
         av_bprintf(&buf, "bitrate=N/A");
+#endif
+/*End Proximie*/
         av_bprintf(&buf_script, "bitrate=N/A\n");
     }else{
+/*Proximie*/
+#if 1
+        av_bprintf(&buf, "avgbitrate=%6.1fkbits/s bitrate=%6.1fkbits/s", bitrate, cur_bitrate>0.0?cur_bitrate:bitrate);
+#else
         av_bprintf(&buf, "bitrate=%6.1fkbits/s", bitrate);
+#endif
+/*End Proximie*/
         av_bprintf(&buf_script, "bitrate=%6.1fkbits/s\n", bitrate);
     }
 
@@ -4775,7 +4814,7 @@ static int transcode_step(void)
 }
 
 /* Proximie */
-static void px_process(void)
+static void px_process(int64_t cur_time)
 {
     int bitrate=0;
     int fps=0;
@@ -4784,6 +4823,7 @@ static void px_process(void)
     int rcv_size;
     OutputStream* enc_ost;
     AVCodecContext* enc_ctx;
+    OutputFile *of;
     json_error_t error;
     json_t *root;
 
@@ -4832,9 +4872,9 @@ static void px_process(void)
  
             enc_ctx = enc_ost->enc_ctx;
             if (enc_ctx->codec_type == AVMEDIA_TYPE_VIDEO) {
-                
+
                 av_log(NULL, AV_LOG_WARNING, "transcode: requested bitrate=%d, fps=%d for stream %d, old fps=%d, bit_rate=%lld, bit_rate_tolerance=%d, rc_max_rate=%lld, rc_min_rate=%lld, rc_buffer_size=%d\n", tmp_bitrate, tmp_fps, i, enc_ost->frame_rate.num, enc_ctx->bit_rate,enc_ctx->bit_rate_tolerance,enc_ctx->rc_max_rate,enc_ctx->rc_min_rate,enc_ctx->rc_buffer_size);
-  
+
                  /* frame rate change - Ignore fps change if its out of bounds or we already running at requested fps */
                 if(tmp_fps>0 && tmp_fps<=60 && tmp_fps!=enc_ost->frame_rate.num) {
                     fps = tmp_fps;
@@ -4846,7 +4886,7 @@ static void px_process(void)
                     enc_ost->sync_opts = 0;
                     enc_ost->frame_number = 0;
 
-                    //todo ost->mux_timebase = enc_ctx->time_base;
+                    enc_ost->fps_reset_time = cur_time;
                 } else {
                     av_log(NULL, AV_LOG_WARNING, "transcode: fps change ignored for %d fps - current fps=%d \n", tmp_fps, enc_ost->frame_rate.num);
                 }
@@ -4860,6 +4900,18 @@ static void px_process(void)
                     enc_ctx->rc_buffer_size = bitrate / 2; /* translates to 500ms */
                     enc_ctx->rc_initial_buffer_occupancy = enc_ctx->rc_buffer_size / 2; /* translates to 250ms */
                     enc_ctx->bit_rate_tolerance = bitrate / 20; /* 5% under/overshoot */
+                    
+                    of = output_files[enc_ost->file_index];
+                    if(of && of->ctx && of->ctx->pb) {
+                        AVFormatContext *oc = of->ctx;
+                        of->bitrate_reset_time = cur_time;
+                        /* taken from print_report */
+                        of->reset_size = avio_size(oc->pb);
+                        if (of->reset_size <= 0)
+                            of->reset_size = avio_tell(oc->pb);
+                    } else {
+                        av_log(NULL, AV_LOG_WARNING, "transcode: invalid output file settings, bitrate stats print out will not be correct... \n");                
+                    }
                 } else {
                     av_log(NULL, AV_LOG_WARNING, "transcode: bitrate change ignored for %d bitrate - current bitrate=%lld \n", tmp_bitrate, enc_ctx->bit_rate);
                 }
@@ -4893,7 +4945,7 @@ static int transcode(void)
     }
 
     timer_start = av_gettime_relative();
-
+    
 #if HAVE_THREADS
     if ((ret = init_input_threads()) < 0)
         goto fail;
@@ -4914,7 +4966,7 @@ static int transcode(void)
         }
 
         /*Proximie*/
-        px_process();
+        px_process(cur_time);
         /*End Proximie*/
 
         ret = transcode_step();
@@ -4960,7 +5012,7 @@ static int transcode(void)
 
     /* dump report by using the first video and audio streams */
     print_report(1, timer_start, av_gettime_relative());
-
+    
     /* close each encoder */
     for (i = 0; i < nb_output_streams; i++) {
         ost = output_streams[i];
