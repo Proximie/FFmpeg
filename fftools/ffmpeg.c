@@ -4830,7 +4830,7 @@ static void px_process(int64_t cur_time)
     rcv_size = recvfrom(px_sockfd, px_rcv_buf, sizeof(px_rcv_buf)-1, 0, NULL, NULL);
     if (rcv_size >= 4) {
         px_rcv_buf[rcv_size]='\0';
-
+#if 0
         // for testing from test app
         if(rcv_size==4) {
             int b = *((uint32_t*)px_rcv_buf);
@@ -4846,7 +4846,7 @@ static void px_process(int64_t cur_time)
             else if (b <= 1800000)    strcpy(px_rcv_buf, "{ \"bitrate\":1800000, \"fps\":22 }");//8
             else                      strcpy(px_rcv_buf, "{ \"bitrate\":2000000, \"fps\":24 }");//9
         }
-
+#endif
         /* Parse the JSON payload */
         av_log(NULL, AV_LOG_WARNING, "transcode: received payload=%s\n",px_rcv_buf);
         root = json_loads(px_rcv_buf, 0, &error);
