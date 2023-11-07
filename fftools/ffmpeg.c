@@ -1765,7 +1765,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
 #if 1
     tr = output_files[0]->bitrate_reset_time ? (cur_time-output_files[0]->bitrate_reset_time) / 1000000.0 : t;
     reset_size = total_size - output_files[0]->reset_size;
-    cur_bitrate = tr>1 && reset_size >= 0 ? reset_size * 8 / tr / 1000.0 : -1;
+    cur_bitrate = tr > 1 && reset_size >= 0 ? reset_size * 8 / tr / 1000.0 : -1;
 #endif
 /*End Proximie*/
 
