@@ -472,6 +472,7 @@ typedef struct OutputStream {
     /*Proximie*/
     int64_t fps_reset_time; /* time fps was reset */
     int total_frames;       /* count of frames since stream start vs frame_number that gets reset with variable frame rate changes */
+    float prev_fps;         /* last valid fps value */
     /*End Proximie*/
 
     AVBSFContext            *bsf_ctx;
@@ -587,7 +588,8 @@ typedef struct OutputFile {
 
     /*Proximie*/
     int64_t bitrate_reset_time; /* time bitrate was reset */
-    int64_t reset_size;              /* file size at bitrate reset */
+    int64_t reset_size;         /* file size at bitrate reset */
+    double prev_bitrate;        /* last valid bitrate value */  
     /*End Proximie*/
 
     int shortest;

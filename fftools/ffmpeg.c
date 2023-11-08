@@ -1766,6 +1766,11 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     tr = output_files[0]->bitrate_reset_time ? (cur_time-output_files[0]->bitrate_reset_time) / 1000000.0 : t;
     reset_size = total_size - output_files[0]->reset_size;
     cur_bitrate = tr > 1 && reset_size >= 0 ? reset_size * 8 / tr / 1000.0 : -1;
+    if(cur_bitrate > 0.0) {
+        output_files[0]->prev_bitrate = cur_bitrate;
+    } else {
+        cur_bitrate = output_files[0]->prev_bitrate;
+    }
 #endif
 /*End Proximie*/
 
@@ -1793,8 +1798,13 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
             frame_number = ost->total_frames;
             fps = t > 1 ? frame_number / t : 0;
             cur_fps = tr > 1 ? ost->frame_number / tr : -1;
+            if(cur_fps > 0.0) {
+                ost->prev_fps = cur_fps;
+            } else {
+                cur_fps = ost->prev_fps;
+            }
             av_bprintf(&buf, "frame=%5d avgfps=%3.*f fps=%3.*f q=%3.1f ",
-                     frame_number, fps < 9.95, fps, cur_fps>0.0?cur_fps < 9.95:fps < 9.95, cur_fps>0.0?cur_fps:fps, q);
+                     frame_number, fps < 9.95, fps, cur_fps < 9.95, cur_fps, q);
 #else
             frame_number = ost->frame_number;
             fps = t > 1 ? frame_number / t : 0;
@@ -1896,7 +1906,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     }else{
 /*Proximie*/
 #if 1
-        av_bprintf(&buf, "avgbitrate=%6.1fkbits/s bitrate=%6.1fkbits/s", bitrate, cur_bitrate>0.0?cur_bitrate:bitrate);
+        av_bprintf(&buf, "avgbitrate=%6.1fkbits/s bitrate=%6.1fkbits/s", bitrate, cur_bitrate);
 #else
         av_bprintf(&buf, "bitrate=%6.1fkbits/s", bitrate);
 #endif
