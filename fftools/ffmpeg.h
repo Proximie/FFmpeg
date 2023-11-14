@@ -471,8 +471,10 @@ typedef struct OutputStream {
 
     /*Proximie*/
     int64_t fps_reset_time; /* time fps was reset */
+    int reset_frame_number; /* frame number when fps stats were reset */
     int total_frames;       /* count of frames since stream start vs frame_number that gets reset with variable frame rate changes */
     float prev_fps;         /* last valid fps value */
+    int need_transcode_reset; /* tells if we need to reset transcoding timing stats */
     /*End Proximie*/
 
     AVBSFContext            *bsf_ctx;

@@ -117,6 +117,7 @@
 SOCKET px_sockfd=-1;
 static int px_listen_port = 32000;
 static char px_rcv_buf[512];
+const float STAT_AVG_PERIOD = 60.0; /* Number of sec's to average current (non-total) stats over */
 /*End Proximie*/
 
 const char program_name[] = "ffmpeg";
@@ -1713,7 +1714,13 @@ static void print_final_stats(int64_t total_size)
     }
 }
 
+/*Proximie*/
+#if 1
+static void print_report(int is_last_report, int64_t timer_start, int64_t cur_time, int64_t transcode_us)
+#else
 static void print_report(int is_last_report, int64_t timer_start, int64_t cur_time)
+#endif
+/*End Proximie*/
 {
     AVBPrint buf, buf_script;
     OutputStream *ost;
@@ -1736,6 +1743,20 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     float tr;
     int64_t reset_size;
     double cur_bitrate;
+    static int64_t transcode_total = 0;
+    static int64_t transcode_max = 0;
+    static int64_t transcode_reset_time = 0;
+    static int transcode_reset_frame_number = 0;
+    static int64_t transcode_reset_total = 0;
+    static int64_t transcode_us_last = 0;
+    static float prev_transcode_pf = 0.0;
+    static int64_t prev_transcode_max = 0;
+
+    if(transcode_us>0) {
+        transcode_total += transcode_us;
+        transcode_max = transcode_us > transcode_max ? transcode_us : transcode_max;
+        transcode_us_last = transcode_us;
+    }
 #endif
 /*End Proximie*/
 
@@ -1763,7 +1784,13 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
 
 /*Proximie*/
 #if 1
-    tr = output_files[0]->bitrate_reset_time ? (cur_time-output_files[0]->bitrate_reset_time) / 1000000.0 : t;
+    tr = output_files[0]->bitrate_reset_time ? (cur_time - output_files[0]->bitrate_reset_time) / 1000000.0 : t;
+    /* Note: for better precission - current (non-total) stats gets reset either on fps/bitrate change or 60s whichever is shorter */
+    if(tr > STAT_AVG_PERIOD) {
+        output_files[0]->bitrate_reset_time = cur_time;
+        output_files[0]->reset_size = total_size;
+        tr = 0;
+    }
     reset_size = total_size - output_files[0]->reset_size;
     cur_bitrate = tr > 1 && reset_size >= 0 ? reset_size * 8 / tr / 1000.0 : -1;
     if(cur_bitrate > 0.0) {
@@ -1794,17 +1821,53 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
 /*Proximie*/
 #if 1
             float cur_fps;
-            tr = ost->fps_reset_time ? (cur_time-ost->fps_reset_time) / 1000000.0 : t;
+            float avg_transcode_pf;
+            float cur_transcode_pf;
+            int64_t cur_transcode_max;
+
             frame_number = ost->total_frames;
             fps = t > 1 ? frame_number / t : 0;
-            cur_fps = tr > 1 ? ost->frame_number / tr : -1;
+            tr = ost->fps_reset_time ? (cur_time - ost->fps_reset_time) / 1000000.0 : t;
+            if(tr > STAT_AVG_PERIOD) {
+                ost->fps_reset_time = cur_time;
+                ost->reset_frame_number = frame_number;
+                tr = 0;
+            }
+            cur_fps = tr > 1 ? (frame_number - ost->reset_frame_number) / tr : -1;
             if(cur_fps > 0.0) {
                 ost->prev_fps = cur_fps;
             } else {
                 cur_fps = ost->prev_fps;
             }
-            av_bprintf(&buf, "frame=%5d avgfps=%3.*f fps=%3.*f q=%3.1f ",
-                     frame_number, fps < 9.95, fps, cur_fps < 9.95, cur_fps, q);
+
+            /* Note: transcoding stats don't really fit into OST especially if there are multiple outputs, but ffmpeg
+            prints stats only for first OST (see vid=1) so we using similar approach. Change this if we need per output stats.
+            */
+            tr = transcode_reset_time ? (cur_time - transcode_reset_time) / 1000000.0 : t;
+            if(tr > STAT_AVG_PERIOD) {
+                ost->need_transcode_reset = 1;
+            }
+            if(ost->need_transcode_reset) {
+                ost->need_transcode_reset = 0;
+                transcode_reset_time = cur_time;
+                transcode_reset_frame_number = frame_number;
+                transcode_reset_total = transcode_total;
+                transcode_max = transcode_us_last;
+            }
+            if(tr > 1) {
+                int frames_since_reset = frame_number - transcode_reset_frame_number;
+                cur_transcode_pf = frames_since_reset > 0 ? (transcode_total - transcode_reset_total) / frames_since_reset / 1000.0 : transcode_us_last / 1000.0;
+                cur_transcode_max = transcode_max;
+                prev_transcode_pf = cur_transcode_pf;
+                prev_transcode_max = cur_transcode_max;
+            } else {
+                cur_transcode_pf = prev_transcode_pf;
+                cur_transcode_max = prev_transcode_max;
+            }
+            avg_transcode_pf = frame_number > 0 ? transcode_total / frame_number / 1000.0 : -1.0;
+            
+            av_bprintf(&buf, "frame=%5d avgfps=%3.*f fps=%3.*f q=%3.1f avgtranscode=%3.1f transcode=%3.1f transcode_max=%3.1f",
+                     frame_number, fps < 9.95, fps, cur_fps < 9.95, cur_fps, q, avg_transcode_pf, cur_transcode_pf, cur_transcode_max / 1000.0);
 #else
             frame_number = ost->frame_number;
             fps = t > 1 ? frame_number / t : 0;
@@ -4897,6 +4960,8 @@ static void px_process(int64_t cur_time)
                     enc_ost->frame_number = 0;
 
                     enc_ost->fps_reset_time = cur_time;
+                    enc_ost->reset_frame_number = enc_ost->total_frames;
+                    enc_ost->need_transcode_reset = 1;
                 } else {
                     av_log(NULL, AV_LOG_WARNING, "transcode: fps change ignored for %d fps - current fps=%d \n", tmp_fps, enc_ost->frame_rate.num);
                 }
@@ -4922,6 +4987,7 @@ static void px_process(int64_t cur_time)
                     } else {
                         av_log(NULL, AV_LOG_WARNING, "transcode: invalid output file settings, bitrate stats print out will not be correct... \n");                
                     }
+                    enc_ost->need_transcode_reset = 1;
                 } else {
                     av_log(NULL, AV_LOG_WARNING, "transcode: bitrate change ignored for %d bitrate - current bitrate=%lld \n", tmp_bitrate, enc_ctx->bit_rate);
                 }
@@ -4986,7 +5052,27 @@ static int transcode(void)
         }
 
         /* dump report by using the output first video and audio streams */
+/*Proximie*/
+#if 1
+        {
+            static int last_total_frames = 0;
+            int64_t transcode_us = 0;
+            /* Calc stats only if we had at least 1 frame to encode */
+            if(nb_output_streams > 0) {
+                OutputStream* enc_ost = output_streams[0];
+                if(enc_ost) {
+                    if(enc_ost->total_frames != last_total_frames) {
+                        last_total_frames = enc_ost->total_frames;
+                        transcode_us = av_gettime_relative() - cur_time;
+                    }
+                }
+            }
+            print_report(0, timer_start, cur_time, transcode_us);
+        }
+#else
         print_report(0, timer_start, cur_time);
+#endif
+/*End Proximie*/
     }
 #if HAVE_THREADS
     free_input_threads();
@@ -5021,7 +5107,13 @@ static int transcode(void)
     }
 
     /* dump report by using the first video and audio streams */
+/*Proximie*/
+#if 1
+    print_report(1, timer_start, av_gettime_relative(),0);
+#else
     print_report(1, timer_start, av_gettime_relative());
+#endif
+/*End Proximie*/
     
     /* close each encoder */
     for (i = 0; i < nb_output_streams; i++) {
