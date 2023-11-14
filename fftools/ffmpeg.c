@@ -4972,8 +4972,6 @@ static void px_process(int64_t cur_time)
                     enc_ctx->bit_rate = bitrate;
                     enc_ctx->rc_max_rate = bitrate;
                     enc_ctx->rc_min_rate = bitrate;
-                    enc_ctx->rc_buffer_size = bitrate / 2; /* translates to 500ms */
-                    enc_ctx->rc_initial_buffer_occupancy = enc_ctx->rc_buffer_size / 2; /* translates to 250ms */
                     enc_ctx->bit_rate_tolerance = bitrate / 20; /* 5% under/overshoot */
                     
                     of = output_files[enc_ost->file_index];
