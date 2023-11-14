@@ -1752,7 +1752,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     static float prev_transcode_pf = 0.0;
     static int64_t prev_transcode_max = 0;
 
-    if(transcode_us>0) {
+    if(transcode_us > 0) {
         transcode_total += transcode_us;
         transcode_max = transcode_us > transcode_max ? transcode_us : transcode_max;
         transcode_us_last = transcode_us;
@@ -1866,7 +1866,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
             }
             avg_transcode_pf = frame_number > 0 ? transcode_total / frame_number / 1000.0 : -1.0;
             
-            av_bprintf(&buf, "frame=%5d avgfps=%3.*f fps=%3.*f q=%3.1f avgtranscode=%3.1f transcode=%3.1f transcode_max=%3.1f",
+            av_bprintf(&buf, "frame=%5d avgfps=%3.*f fps=%3.*f q=%3.1f avgtranscode=%3.1f transcode=%3.1f transcode_max=%3.1f ",
                      frame_number, fps < 9.95, fps, cur_fps < 9.95, cur_fps, q, avg_transcode_pf, cur_transcode_pf, cur_transcode_max / 1000.0);
 #else
             frame_number = ost->frame_number;
@@ -5107,7 +5107,7 @@ static int transcode(void)
     /* dump report by using the first video and audio streams */
 /*Proximie*/
 #if 1
-    print_report(1, timer_start, av_gettime_relative(),0);
+    print_report(1, timer_start, av_gettime_relative(), 0);
 #else
     print_report(1, timer_start, av_gettime_relative());
 #endif
