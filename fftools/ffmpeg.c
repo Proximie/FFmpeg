@@ -1716,7 +1716,7 @@ static void print_final_stats(int64_t total_size)
 
 /*Proximie*/
 #if 1
-static void print_report(int is_last_report, int64_t timer_start, int64_t cur_time, int64_t transcode_us)
+static void print_report(int is_last_report, int64_t timer_start, int64_t cur_time, int64_t decode_us, int64_t encode_us)
 #else
 static void print_report(int is_last_report, int64_t timer_start, int64_t cur_time)
 #endif
@@ -1743,19 +1743,33 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
     float tr;
     int64_t reset_size;
     double cur_bitrate;
-    static int64_t transcode_total = 0;
-    static int64_t transcode_max = 0;
     static int64_t transcode_reset_time = 0;
-    static int transcode_reset_frame_number = 0;
-    static int64_t transcode_reset_total = 0;
-    static int64_t transcode_us_last = 0;
-    static float prev_transcode_pf = 0.0;
-    static int64_t prev_transcode_max = 0;
+    static int64_t enc_total = 0;
+    static int64_t dec_total = 0;
+    static int64_t enc_max = 0;
+    static int64_t dec_max = 0;
+    static int enc_reset_frame_number = 0;
+    static int dec_reset_frame_number = 0;
+    static int64_t enc_reset_total = 0;
+    static int64_t dec_reset_total = 0;
+    static int64_t enc_us_last = 0;
+    static int64_t dec_us_last = 0;
+    static float prev_enc_pf = 0.0;
+    static float prev_dec_pf = 0.0;
+    static int64_t prev_enc_max = 0;
+    static int64_t prev_dec_max = 0;
+    static float prev_enc_pct = 0.0;
+    static float prev_dec_pct = 0.0;
 
-    if(transcode_us > 0) {
-        transcode_total += transcode_us;
-        transcode_max = transcode_us > transcode_max ? transcode_us : transcode_max;
-        transcode_us_last = transcode_us;
+    enc_total += encode_us;
+    if(encode_us > 0) {
+        enc_max = encode_us > enc_max ? encode_us : enc_max;
+        enc_us_last = encode_us;
+    }
+    dec_total += decode_us;
+    if(decode_us > 0) {
+        dec_max = decode_us > dec_max ? decode_us : dec_max;
+        dec_us_last = decode_us;
     }
 #endif
 /*End Proximie*/
@@ -1821,9 +1835,23 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
 /*Proximie*/
 #if 1
             float cur_fps;
-            float avg_transcode_pf;
-            float cur_transcode_pf;
-            int64_t cur_transcode_max;
+            float avg_enc_pf;
+            float avg_dec_pf;
+            float cur_enc_pf;
+            float cur_dec_pf;
+            int64_t cur_enc_max;
+            int64_t cur_dec_max;
+            float cur_enc_pct;
+            float cur_dec_pct;
+            int frames_decoded = 0;
+
+            for (int k = 0; k < nb_input_streams; k++) {
+                InputStream *ist = input_streams[k];
+                if (ist && ist->decoding_needed) {
+                    frames_decoded = (int) ist->frames_decoded;
+                    break;
+                }
+            }
 
             frame_number = ost->total_frames;
             fps = t > 1 ? frame_number / t : 0;
@@ -1850,24 +1878,48 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
             if(ost->need_transcode_reset) {
                 ost->need_transcode_reset = 0;
                 transcode_reset_time = cur_time;
-                transcode_reset_frame_number = frame_number;
-                transcode_reset_total = transcode_total;
-                transcode_max = transcode_us_last;
+                enc_reset_frame_number = frame_number;
+                dec_reset_frame_number = frames_decoded;
+                enc_reset_total = enc_total;
+                dec_reset_total = dec_total;
+                enc_max = enc_us_last;
+                dec_max = dec_us_last;
+                tr = 0;
             }
             if(tr > 1) {
-                int frames_since_reset = frame_number - transcode_reset_frame_number;
-                cur_transcode_pf = frames_since_reset > 0 ? (transcode_total - transcode_reset_total) / frames_since_reset / 1000.0 : transcode_us_last / 1000.0;
-                cur_transcode_max = transcode_max;
-                prev_transcode_pf = cur_transcode_pf;
-                prev_transcode_max = cur_transcode_max;
+                double total_us = transcode_reset_time ? (cur_time - transcode_reset_time) : t*1000000.0;
+                int enc_frames_since_reset = frame_number - enc_reset_frame_number;
+                int dec_frames_since_reset = frames_decoded - dec_reset_frame_number;
+                cur_enc_pf = enc_frames_since_reset > 0 ? (enc_total - enc_reset_total) / enc_frames_since_reset / 1000.0 : enc_us_last / 1000.0;
+                cur_dec_pf = dec_frames_since_reset > 0 ? (dec_total - dec_reset_total) / dec_frames_since_reset / 1000.0 : dec_us_last / 1000.0;
+                cur_enc_max = enc_max;
+                cur_dec_max = dec_max;
+                cur_enc_pct = (enc_total - enc_reset_total) / total_us;
+                cur_dec_pct = (dec_total - dec_reset_total) / total_us;
+                prev_enc_pf = cur_enc_pf;
+                prev_dec_pf = cur_dec_pf;
+                prev_enc_max = cur_enc_max;
+                prev_dec_max = cur_dec_max;
+                prev_enc_pct = cur_enc_pct;
+                prev_dec_pct = cur_dec_pct;
+#if 0                
+                if(cur_fps<10) {
+                    av_log(NULL, AV_LOG_WARNING, "print_report: lower than expected frame rate detected fps=%.1f\n", cur_fps);
+                }
+#endif
             } else {
-                cur_transcode_pf = prev_transcode_pf;
-                cur_transcode_max = prev_transcode_max;
+                cur_enc_pf = prev_enc_pf;
+                cur_dec_pf = prev_dec_pf;
+                cur_enc_max = prev_enc_max;
+                cur_dec_max = prev_dec_max;
+                cur_enc_pct = prev_enc_pct;
+                cur_dec_pct = prev_dec_pct;
             }
-            avg_transcode_pf = frame_number > 0 ? transcode_total / frame_number / 1000.0 : -1.0;
-            
-            av_bprintf(&buf, "frame=%5d avgfps=%3.*f fps=%3.*f q=%3.1f avgtranscode=%3.1f transcode=%3.1f transcode_max=%3.1f ",
-                     frame_number, fps < 9.95, fps, cur_fps < 9.95, cur_fps, q, avg_transcode_pf, cur_transcode_pf, cur_transcode_max / 1000.0);
+            avg_enc_pf = frame_number > 0 ? enc_total / frame_number / 1000.0 : -1.0;
+            avg_dec_pf = frames_decoded > 0 ? dec_total / frames_decoded / 1000.0 : -1.0;
+
+            av_bprintf(&buf, "decframes=%5d encframes=%5d avgfps=%3.*f fps=%3.*f q=%3.1f dec_pct=%1.2f enc_pct=%1.2f avgdec=%3.1f dec=%3.1f dec_max=%3.1f avgenc=%3.1f enc=%3.1f enc_max=%3.1f ",
+                     frames_decoded, frame_number, fps < 9.95, fps, cur_fps < 9.95, cur_fps, q, cur_dec_pct, cur_enc_pct, avg_dec_pf, cur_dec_pf, cur_dec_max / 1000.0, avg_enc_pf, cur_enc_pf, cur_enc_max / 1000.0);
 #else
             frame_number = ost->frame_number;
             fps = t > 1 ? frame_number / t : 0;
@@ -5053,19 +5105,33 @@ static int transcode(void)
 /*Proximie*/
 #if 1
         {
-            static int last_total_frames = 0;
-            int64_t transcode_us = 0;
-            /* Calc stats only if we had at least 1 frame to encode */
-            if(nb_output_streams > 0) {
-                OutputStream* enc_ost = output_streams[0];
-                if(enc_ost) {
-                    if(enc_ost->total_frames != last_total_frames) {
-                        last_total_frames = enc_ost->total_frames;
-                        transcode_us = av_gettime_relative() - cur_time;
+            static uint64_t last_dec_frames = 0;
+            static int last_enc_frames = 0;
+            int64_t decode_us = 0;
+            int64_t encode_us = 0;
+            int64_t us =  av_gettime_relative() - cur_time;
+            if(nb_input_streams > 0) {
+                for (int k = 0; k < nb_input_streams; k++) {
+                    InputStream *ist = input_streams[k];
+                    if (ist && ist->decoding_needed) {
+                        if(ist->frames_decoded != last_dec_frames) {
+                            last_dec_frames = ist->frames_decoded;
+                            decode_us = us;
+                        }
+                        break;
                     }
                 }
             }
-            print_report(0, timer_start, cur_time, transcode_us);
+            if(nb_output_streams > 0) {
+                OutputStream* enc_ost = output_streams[0];
+                if(enc_ost) {
+                    if(enc_ost->total_frames != last_enc_frames) {
+                        last_enc_frames = enc_ost->total_frames;
+                        encode_us = us;
+                    }
+                }
+            }
+            print_report(0, timer_start, cur_time, decode_us, encode_us);
         }
 #else
         print_report(0, timer_start, cur_time);
@@ -5107,7 +5173,7 @@ static int transcode(void)
     /* dump report by using the first video and audio streams */
 /*Proximie*/
 #if 1
-    print_report(1, timer_start, av_gettime_relative(), 0);
+    print_report(1, timer_start, av_gettime_relative(), 0, 0);
 #else
     print_report(1, timer_start, av_gettime_relative());
 #endif
