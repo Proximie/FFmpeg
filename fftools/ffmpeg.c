@@ -1904,7 +1904,7 @@ static void print_report(int is_last_report, int64_t timer_start, int64_t cur_ti
                 prev_dec_pct = cur_dec_pct;
 #if 0                
                 if(cur_fps<10) {
-                    av_log(NULL, AV_LOG_WARNING, "print_report: lower than expected frame rate detected fps=%.1f\n");
+                    av_log(NULL, AV_LOG_WARNING, "print_report: lower than expected frame rate detected fps=%.1f\n", cur_fps);
                 }
 #endif
             } else {
